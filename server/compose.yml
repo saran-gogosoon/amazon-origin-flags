@@ -1,0 +1,20 @@
+# Deployed behind Caddy:  handle_path /origin-flags/* { reverse_proxy api:8080 }
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      COLLECTOR: "1"                 # run the queue worker inside the API container
+      AMAZON_DELAY_MS: "8000-15000"  # polite: ~1 request / 8-15 s
+      CIRCUIT_PAUSE_MINUTES: "30"
+      PROXY_URLS: ${PROXY_URLS:-}    # optional, comma separated http(s)://user:pass@host:port
+    volumes:
+      - ./data:/data
+    expose:
+      - "8080"
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true

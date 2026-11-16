@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Origin Flags · Collector status</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#6b7280; --line:#e5e7eb; --ok:#15803d; --warn:#b45309; --err:#b91c1c; --info:#1d4ed8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:20px 28px 8px; display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:14px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .muted { color:var(--muted); } main { padding:8px 28px 40px; display:grid; gap:16px; grid-template-columns: 1fr 1fr; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .wide { grid-column: 1 / -1; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+  .tile { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .tile b { display:block; font-size:24px; font-variant-numeric:tabular-nums; } .tile span { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; } td, th { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; } td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lvl { font-weight:600; font-size:11px; padding:1px 6px; border-radius:4px; }
+  .lvl.info { background:#eff6ff; color:var(--info); } .lvl.warn { background:#fffbeb; color:var(--warn); } .lvl.error { background:#fef2f2; color:var(--err); }
+  tr.block td { background:#fffbeb; } tr.circuit td { background:#fef2f2; } tr.recover td { background:#f0fdf4; }
+  code { font:12px ui-monospace,Menlo,monospace; word-break:break-all; }
+  .bar { display:flex; height:14px; border-radius:4px; overflow:hidden; background:var(--line); margin:4px 0 2px; }
+  .bar i { display:block; height:100%; } .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--muted); }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:12px; border:1px solid var(--line); margin:0 4px 4px 0; }
+  .pill.paused { border-color:#fecaca; color:var(--err); background:#fef2f2; } .pill.ok { border-color:#bbf7d0; color:var(--ok); background:#f0fdf4; }
+  ul.def { margin:0; padding-left:18px; } ul.def li { margin:3px 0; }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Origin Flags · collector</h1>
+  <span class="muted" id="updated">loading…</span>
+</header>
+<main>
+  <section class="wide">
+    <h2>Database</h2>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section>
+    <h2>Flag codes in DB</h2>
+    <div id="codes"></div>
+  </section>
+
+  <section>
+    <h2>Hosts &amp; blocking defences</h2>
+    <div id="hosts"></div>
+    <ul class="def muted">
+      <li>Detects captcha pages (<code>/errors/validateCaptcha</code>, “Geben Sie die unten angezeigten Zeichen ein”), HTTP 503/429/403, robot and empty pages.</li>
+      <li>Per-host rate limit (amazon.de ≈ 1 request / 8–15 s), exponential backoff with jitter.</li>
+      <li>New session on every block: user agent, matching headers, fresh cookie jar, next proxy from <code>PROXY_URLS</code>.</li>
+      <li>Circuit breaker pauses a host after repeated blocks. A headless browser is the last fallback.</li>
+      <li>Queue lives in SQLite, so a crash or restart loses nothing.</li>
+    </ul>
+  </section>
+
+  <section class="wide">
+    <h2>Live collector log</h2>
+    <table><thead><tr><th>Time</th><th>Level</th><th>Event</th><th>Detail</th></tr></thead><tbody id="log"></tbody></table>
+  </section>
+
+  <section class="wide">
+    <h2>Queue (active first)</h2>
+    <table><thead><tr><th>Kind</th><th>Target</th><th>Status</th><th>Attempts</th><th>Next try</th><th>Origin</th><th>Last error</th></tr></thead><tbody id="queue"></tbody></table>
+  </section>
+</main>
+<script>
+// Relative URLs so this page works at / and behind a reverse proxy under /origin-flags/.
+const base = location.pathname.replace(/[^/]*$/, '');
+const api = (p) => fetch(base + p, { cache: 'no-store' }).then((r) => r.json());
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const t = (ms) => ms ? new Date(ms).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'medium' }) : '–';
+const COLORS = { AMAZON: '#ff9900', DE: '#111827', EU: '#1d4ed8', CN: '#dc2626', US: '#7c3aed', OTHER: '#0d9488', UNKNOWN: '#d1d5db' };
+
+function bar(label, counts) {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
+  const order = Object.keys(COLORS).filter((k) => counts[k]);
+  return `<div><b>${label}</b> <span class="muted">(${total} products)</span>
+    <div class="bar">${order.map((k) => `<i title="${k}: ${counts[k]}" style="width:${100 * counts[k] / total}%;background:${COLORS[k]}"></i>`).join('')}</div>
+    <div class="legend">${order.map((k) => `<span><i style="background:${COLORS[k]}"></i>${k} ${counts[k]}</span>`).join('')}</div></div><br>`;
+}
+
+async function refresh() {
+  const [s, l, q] = await Promise.all([api('api/stats'), api('api/collector/log?limit=150'), api('api/queue')]);
+  const tiles = [
+    ['Products resolved', s.products], ['ASINs seen', s.products_seen], ['Brands', `${s.brands_with_country}/${s.brands}`],
+    ['Sellers', `${s.sellers_with_country}/${s.sellers}`], ['Queue pending', s.queue.pending ?? 0],
+    ['Queue done', s.queue.done ?? 0], ['Failed', s.queue.failed ?? 0], ['Blocks (24h)', s.blocks_24h],
+  ];
+  document.getElementById('tiles').innerHTML = tiles.map(([k, v]) => `<div class="tile"><b>${v}</b><span>${k}</span></div>`).join('');
+  document.getElementById('codes').innerHTML = bar('Brand owner (left badge)', s.codes.brand) + bar('Seller (right badge)', s.codes.seller);
+
+  // Host state comes from the log, so it works whether the collector runs in this process or a separate one.
+  const hosts = {};
+  for (const e of [...l.events].reverse()) {
+    const d = safe(e.detail); if (!d.host) continue;
+    const h = hosts[d.host] ??= { blocks: 0, paused: 0 };
+    if (e.event === 'blocked') h.blocks++;
+    if (e.event === 'circuit_open') h.paused = Date.parse(d.paused_until);
+    if (e.event === 'recovered') h.paused = 0;
+  }
+  document.getElementById('hosts').innerHTML = Object.entries(hosts).map(([h, v]) => v.paused > Date.now()
+    ? `<span class="pill paused">${esc(h)} paused until ${t(v.paused)}</span>`
+    : `<span class="pill ok">${esc(h)} active · ${v.blocks} recent blocks</span>`).join('') || '<span class="muted">no blocks in recent log</span>';
+
+  document.getElementById('log').innerHTML = l.events.map((e) => {
+    const cls = e.event === 'blocked' ? 'block' : e.event === 'circuit_open' ? 'circuit' : e.event === 'recovered' ? 'recover' : '';
+    return `<tr class="${cls}"><td class="num">${t(e.ts)}</td><td><span class="lvl ${e.level}">${e.level}</span></td><td>${esc(e.event)}</td><td><code>${esc(e.detail)}</code></td></tr>`;
+  }).join('');
+  document.getElementById('queue').innerHTML = q.map((j) => `<tr><td>${j.kind}</td><td><code>${esc(j.target)}</code></td><td>${j.status}</td>
+    <td class="num">${j.attempts}</td><td class="num">${j.status === 'pending' ? t(j.next_try_at) : ''}</td><td>${esc(j.origin)}</td><td><code>${esc(j.last_error)}</code></td></tr>`).join('');
+  document.getElementById('updated').textContent = `updated ${new Date().toLocaleTimeString('en-GB')} · last collector event ${t(s.last_event_at)}`;
+}
+const safe = (s) => { try { return JSON.parse(s); } catch { return {}; } };
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>
