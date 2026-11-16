@@ -22,6 +22,8 @@ filling the server's database from amazon.de and the EU trade mark register. It 
 | Globe | Any other country |
 | Empty dashed circle | Not known yet. The ASIN is already queued for the collector |
 
+The flags have a white ring and a soft shadow so they stay readable on any product picture. Default size is M (26 px); S and L are in the popup.
+
 Hover a badge to see the brand, the owner company, the seller, and **the source of each fact**.
 
 ---
@@ -79,10 +81,10 @@ All URLs on the status page are relative, so it works behind Caddy at `/origin-f
 | Brand, seller name + seller id | amazon.de product page: product overview / `Marke`, `#bylineInfo`; `#sellerProfileTriggerId` or the "Versender / Verkäufer" box | `products.source` |
 | Manufacturer name + address | **EU GPSR "Herstellerinformationen" block** on the product page. It is lazy-loaded, so the collector calls the same `getRspManufacturerContent` endpoint the page uses, with the page's own `x-amz-acp-params` token | `products.manufacturer*` |
 | Seller country | amazon.de seller profile `/sp?seller=ID`, "Geschäftsadresse" (last line = country) | `sellers.source` |
-| Brand owner country | 1. Amazon private label → AMAZON<br>2. **EU trade mark owner** if exactly one company holds live EU marks for that exact name (TMview search API → EUIPO eSearch record → applicant nationality)<br>3. **GPSR manufacturer** address country<br>4. EU trade mark owner when several companies share the name (best match to the manufacturer) | `brands.source` + `brands.evidence_url` |
+| Brand owner country | 1. Amazon private label → AMAZON<br>2. **GPSR manufacturer** address country (from this brand's product pages)<br>3. **EU trade mark owner** as second source (TMview search API → EUIPO eSearch record → applicant nationality): fallback when there is no GPSR block, cross-check otherwise | `brands.source` + `brands.evidence_url` |
 
-Why the trade mark owner comes first: Chinese brands often list an EU agent (e.g. "VAT SPEED SL", Spain) as the GPSR "manufacturer".
-The EU trade mark shows the real legal owner. The two sources usually agree, and when they do the source says so.
+The cross-check is written into the source and the tooltip, e.g. `GPSR manufacturer on amazon.de; confirmed by EU trade mark owner`.
+When the two disagree the GPSR value is kept and the disagreement is recorded. Chinese brands sometimes list an EU agent (e.g. "SUCCESS COURIER SL", Spain) as the GPSR "manufacturer", while the EU trade mark belongs to a company in Shenzhen. These cases are listed in `REPORT.md` and are a candidate rule for the next step.
 
 Trade mark register, as tested in November 2026 (no API key needed):
 * TMview `POST https://www.tmdn.org/tmview/api/search/results` works. It needs a browser-like request: header names in browser case and a `Referer`.
@@ -103,6 +105,7 @@ Trade mark register, as tested in November 2026 (no API key needed):
 |---|---|
 | Per-host rate limit | amazon.de: random 8–15 s between requests (`AMAZON_DELAY_MS`); other hosts 3–6 s |
 | Exponential backoff + jitter | 30 s → 1 min → 2 min … up to 20 min, ±30 % jitter, per host |
+| Follow-ups first | Seller and brand jobs run before new product jobs, so every crawled product gets both flags quickly |
 | Session rotation | On each block: new realistic user agent with matching `sec-ch-ua` headers, fresh cookie jar, next proxy |
 | Proxy pool | `PROXY_URLS=http://user:pass@host:port,…`, rotated on each new session |
 | Circuit breaker | After 3 blocks in a row the host is paused for ~30 min (`CIRCUIT_PAUSE_MINUTES`). Jobs for that host wait without using up retries; other hosts keep working |
@@ -181,7 +184,7 @@ The prototype was built in one session with Claude Code, working as an autonomou
 2. **Trade mark register.** It tried TMview and EUIPO endpoints one by one and found that TMview's WAF rejects lowercase HTTP header names. It then chose
    TMview search + EUIPO record as the no-key route.
 3. **Data quality check.** In the first real results the agent noticed EU agents ("… SL", Spain) listed as manufacturers of Chinese
-   brands. It changed the fallback order so a unique EU trade mark owner wins.
+   brands. It added the EU trade mark owner as a cross-check, so these disagreements are visible in the data.
 4. **Verified end to end:** real seed run → API → extension loaded in Chromium on the real amazon.de → screenshots, with badge counts
    printed by the script.
 

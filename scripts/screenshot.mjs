@@ -23,24 +23,60 @@ const ctx = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir(), 'o
 let [sw] = ctx.serviceWorkers();
 sw ??= await ctx.waitForEvent('serviceworker');
 const extId = new URL(sw.url()).host;
-await sw.evaluate((apiBase) => chrome.storage.sync.set({ apiBase, enabled: true, size: 'M' }), API_BASE);
+await sw.evaluate((apiBase) => chrome.storage.sync.set({ apiBase, enabled: true }), API_BASE);
 console.log(`extension ${extId} loaded, API_BASE=${API_BASE}`);
 
 // ---- amazon.de search ---------------------------------------------------------------------------
 const page = ctx.pages()[0] ?? await ctx.newPage();
-await page.goto(`https://www.amazon.de/s?k=${encodeURIComponent(QUERY)}`, { waitUntil: 'domcontentloaded' });
-if (/validateCaptcha/.test(page.url()) || await page.locator('form[action*="validateCaptcha"]').count()) {
+const blockedByCaptcha = async () => /validateCaptcha/.test(page.url()) || await page.locator('form[action*="validateCaptcha"]').count();
+const clickIfVisible = async (sel) => {
+  const el = page.locator(sel).first();
+  if (await el.isVisible().catch(() => false)) { await el.click().catch(() => {}); return true; }
+  return false;
+};
+const dismissPopups = async () => {
+  for (const sel of ['#sp-cc-accept', 'input[data-action-type="DISMISS"]', '.glow-toaster-button-dismiss input',
+    '#nav-main .nav-flyout button[aria-label="Schließen"]']) await clickIfVisible(sel);
+};
+
+// Display prices in EUR (Amazon otherwise picks the currency from the visitor's IP).
+await ctx.addCookies([{ name: 'i18n-prefs', value: 'EUR', domain: '.amazon.de', path: '/' }]);
+
+// 1. Home page: accept cookies, set the delivery address to a German postcode (EUR prices, no
+//    "deliver to another country" popover covering the results).
+await page.goto('https://www.amazon.de/', { waitUntil: 'domcontentloaded' });
+if (await blockedByCaptcha()) {
   console.error('amazon.de showed a captcha to the browser – stopping.');
   await page.screenshot({ path: join(DOCS, 'screenshot-captcha.png') });
   process.exit(2);
 }
-for (const sel of ['#sp-cc-accept', 'input[name="accept"]', 'button:has-text("Akzeptieren")']) {
-  const btn = page.locator(sel).first();
-  if (await btn.isVisible().catch(() => false)) { await btn.click(); console.log('cookie banner accepted'); break; }
+if (await page.locator('#sp-cc-accept').click({ timeout: 8_000 }).then(() => true, () => false)) console.log('cookie banner accepted');
+page.on('response', (r) => { if (r.url().includes('/glow/address-change')) console.log(`address-change → HTTP ${r.status()}`); });
+const POSTCODE = process.env.POSTCODE ?? '20095';
+try {
+  await page.locator('#nav-global-location-popover-link').click({ timeout: 10_000 });
+  await page.waitForSelector('#GLUXZipUpdateInput', { timeout: 10_000 });
+  await page.fill('#GLUXZipUpdateInput', POSTCODE);
+  await page.locator('#GLUXZipUpdateInput').press('Enter');
+  await page.waitForTimeout(1_000);
+  await clickIfVisible('#GLUXZipUpdate input');
+  await page.waitForTimeout(2_500); // POST /portal-migration/hz/glow/address-change
+  await clickIfVisible('#GLUXConfirmClose');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const where = (await page.locator('#glow-ingress-line2').innerText().catch(() => '')).replace(/\u200c/g, '').trim();
+  console.log(`delivery location set: ${where}`);
+} catch (err) {
+  console.warn(`could not set delivery location (${err.message.split('\n')[0]}) – continuing`);
 }
-// "Deliver to another country?" popover (shown to non-German IPs) covers the first row.
-const dismiss = page.locator('input[data-action-type="DISMISS"], .glow-toaster-button-dismiss input').first();
-if (await dismiss.isVisible().catch(() => false)) await dismiss.click().catch(() => {});
+
+// 2. Search.
+await page.goto(`https://www.amazon.de/s?k=${encodeURIComponent(QUERY)}`, { waitUntil: 'domcontentloaded' });
+if (await blockedByCaptcha()) {
+  console.error('amazon.de showed a captcha to the browser – stopping.');
+  await page.screenshot({ path: join(DOCS, 'screenshot-captcha.png') });
+  process.exit(2);
+}
+await dismissPopups();
 await page.waitForSelector('of-badge', { timeout: 30_000 });
 await page.waitForTimeout(3_000); // let lazy tiles get their badges
 
@@ -68,6 +104,8 @@ console.log('brand codes', JSON.stringify(stats.brandCodes), 'seller codes', JSO
 const first = page.locator('[data-component-type="s-search-result"] of-badges').first();
 await first.evaluate((el) => el.closest('[data-component-type="s-search-result"]').scrollIntoView({ block: 'start' }));
 await page.evaluate(() => window.scrollBy(0, -120));
+await dismissPopups();
+await page.mouse.move(1430, 990);
 await page.waitForTimeout(800);
 await page.screenshot({ path: join(DOCS, 'screenshot-search.png') });
 
