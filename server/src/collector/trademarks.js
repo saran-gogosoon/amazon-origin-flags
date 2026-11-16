@@ -1,60 +1,87 @@
 // EU trade mark register lookup, no API key needed:
-//  1. TMview (tmdn.org) search API → EU trade marks (office EM) whose name equals the brand.
-//  2. EUIPO eSearch data endpoint (euipo.europa.eu/copla) → applicant name + nationality/country.
-// TMview's own detail endpoint sits behind a WAF (403), so step 2 uses the EUIPO record instead.
+//  1. EUIPO eSearch search (euipo.europa.eu/copla/ctmsearch/json): marks with applicant name, applicant
+//     country and Nice classes in one request.
+//  2. Fallback: TMview (tmdn.org) search API + EUIPO record (copla/trademark/data) for the applicant's country.
+// A mark's owner is only accepted when its name is similar to the GPSR manufacturer of the product
+// (same brand word is often registered by unrelated companies, e.g. "FELCO" for medical supplies in MY).
 import { getPage } from './http.js';
 import { toIso } from '../countries.js';
+import { namesSimilar } from '../names.js';
 
+export { namesSimilar };
+
+const ESEARCH = 'https://euipo.europa.eu/copla/ctmsearch/json';
 const TMVIEW = 'https://www.tmdn.org/tmview/api/search/results?translate=true';
 const COPLA = 'https://euipo.europa.eu/copla/trademark/data/';
-const LIVE = /Registered|Filed|published|Application|Opposition|Appeal|Eingetragen|Anmeldung|veröffentlicht|Widerspruch|Beschwerde/i;
+const LIVE = /Registered|Filed|published|Application|Opposition|Appeal|IR accepted|Eingetragen|Anmeldung|veröffentlicht|Widerspruch|Beschwerde/i;
 
-const norm = (s) => (s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+const fold = (s) => (s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '');
+const norm = (s) => fold(s).replace(/[^a-z0-9]/g, '');
 
-export async function searchEutm(brand) {
+const niceList = (n) => String(n ?? '').split(/[,\s]+/).map(Number).filter(Boolean);
+
+/** EUIPO eSearch: marks whose word element equals the brand → [{ number, name, applicant, country, nice[], status }]. */
+export async function searchEuipo(brand) {
+  const form = new URLSearchParams({ start: '0', rows: '100', searchMode: 'basic', criterion_1: 'MarkVerbalElementText',
+    term_1: brand, operator_1: 'OR', condition_1: 'CONTAINS', sortField: 'ApplicationNumber', sortOrder: 'asc' });
+  const res = await getPage(ESEARCH, {
+    method: 'POST', body: form.toString(),
+    headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', accept: 'application/json',
+      referer: 'https://euipo.europa.eu/eSearch/', 'x-requested-with': 'XMLHttpRequest' },
+    expect: /"items"/, allowBrowser: false,
+  });
+  return (JSON.parse(res.body).items ?? []).filter((t) => norm(t.name) === norm(brand)).map((t) => ({
+    number: t.number ?? t.numberToShow, name: t.name, applicant: t.applicantname, country: toIso(t.applicantCountry),
+    nice: niceList(t.nice), status: t.status, source: 'EUIPO eSearch',
+  }));
+}
+
+/** TMview fallback (no Nice classes or countries in the result; country comes from the EUIPO record). */
+export async function searchTmview(brand) {
   const res = await getPage(TMVIEW, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json', referer: 'https://www.tmdn.org/tmview/' },
     body: JSON.stringify({ page: '1', pageSize: '30', criteria: 'C', basicSearch: brand, fOffices: ['EM'],
-      fields: ['ST13', 'tmName', 'tmOffice', 'applicationNumber', 'applicationDate', 'tradeMarkStatus', 'applicantName'] }),
-    expect: /"tradeMarks"|"totalResults"/,
-    allowBrowser: false,
+      fields: ['ST13', 'tmName', 'tmOffice', 'applicationNumber', 'tradeMarkStatus', 'applicantName', 'niceClass'] }),
+    expect: /"tradeMarks"|"totalResults"/, allowBrowser: false,
   });
-  const { tradeMarks = [] } = JSON.parse(res.body);
-  return tradeMarks.filter((t) => norm(t.tmName) === norm(brand) && t.tmOffice === 'EM');
+  return (JSON.parse(res.body).tradeMarks ?? []).filter((t) => norm(t.tmName) === norm(brand) && t.tmOffice === 'EM')
+    .map((t) => ({ number: t.applicationNumber, name: t.tmName, applicant: t.applicantName?.[0], country: null,
+      nice: t.niceClass ?? [], status: t.tradeMarkStatus, source: 'TMview' }));
 }
 
-export async function eutmOwner(applicationNumber) {
-  const url = COPLA + applicationNumber;
-  const res = await getPage(url, { headers: { accept: 'application/json' }, expect: /"applicants"/, allowBrowser: false });
-  const data = JSON.parse(res.body);
-  const a = data.applicants?.[0];
-  if (!a) return null;
-  return {
-    name: a.name ?? a.orga ?? null,
-    country: toIso(a.address?.countryCode) ?? toIso(a.nationality),
-    evidence_url: `https://euipo.europa.eu/eSearch/#details/trademarks/${applicationNumber}`,
-  };
+async function recordCountry(number) {
+  const res = await getPage(COPLA + number, { headers: { accept: 'application/json' }, expect: /"applicants"/, allowBrowser: false });
+  const a = JSON.parse(res.body).applicants?.[0];
+  return toIso(a?.address?.countryCode) ?? toIso(a?.nationality);
 }
 
 /**
- * Best EU trade mark owner for a brand. If we know the product's manufacturer, prefer a mark
- * whose applicant resembles it (same brand name can be registered by unrelated companies).
+ * EU trade mark owner for a brand, accepted only if the owner's name matches the GPSR manufacturer.
+ * Returns { matched: true, name, country, mark, nice, status, evidence_url, source }
+ *      or { matched: false, reason, candidates }.
  */
 export async function lookupBrandOwner(brand, manufacturerName) {
-  const marks = await searchEutm(brand);
-  if (!marks.length) return null;
-  const m = norm(manufacturerName);
-  const score = (t) => {
-    const applicant = norm(t.applicantName?.[0]);
-    let s = LIVE.test(t.tradeMarkStatus ?? '') ? 2 : 0;
-    if (m && applicant && (applicant.includes(m.slice(0, 8)) || m.includes(applicant.slice(0, 8)))) s += 5;
-    return s + (Date.parse(t.applicationDate) || 0) / 1e14; // tie-break: newest
+  let marks;
+  try {
+    marks = await searchEuipo(brand);
+  } catch {
+    marks = await searchTmview(brand);
+  }
+  if (!marks.length) return { matched: false, reason: 'no EU trade mark with this name', candidates: 0 };
+  if (!manufacturerName) return { matched: false, reason: 'no GPSR manufacturer to compare with', candidates: marks.length };
+
+  const matching = marks.filter((t) => namesSimilar(t.applicant, manufacturerName));
+  if (!matching.length) {
+    const owners = [...new Set(marks.map((t) => `${t.applicant}${t.country ? ` (${t.country})` : ''}`))].slice(0, 3);
+    return { matched: false, reason: `no matching EU mark (owners: ${owners.join('; ')})`, candidates: marks.length };
+  }
+  // Prefer live marks covering Nice class 8 (hand tools), then any live mark.
+  const score = (t) => (LIVE.test(t.status ?? '') ? 2 : 0) + (t.nice.includes(8) ? 3 : 0);
+  const best = matching.sort((a, b) => score(b) - score(a))[0];
+  const country = best.country ?? await recordCountry(best.number).catch(() => null);
+  return {
+    matched: true, name: best.applicant, country, mark: best.name, nice: best.nice, status: best.status, source: best.source,
+    evidence_url: `https://euipo.europa.eu/eSearch/#details/trademarks/${best.number}`, candidates: marks.length,
   };
-  const best = marks.sort((a, b) => score(b) - score(a))[0];
-  const owner = await eutmOwner(best.applicationNumber);
-  // "unique": every live EU mark with exactly this name belongs to the same applicant → no namesake doubt.
-  const liveOwners = new Set(marks.filter((t) => LIVE.test(t.tradeMarkStatus ?? '')).map((t) => norm(t.applicantName?.[0])));
-  return owner && { ...owner, mark: best.tmName, status: best.tradeMarkStatus, candidates: marks.length,
-    live: LIVE.test(best.tradeMarkStatus ?? ''), unique: liveOwners.size === 1 };
 }

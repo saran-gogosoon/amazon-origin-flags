@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 
 const lookupStmt = db.prepare(`
   SELECT p.asin, p.title, p.brand, p.seller_id, p.seller_name, p.manufacturer, p.manufacturer_country, p.updated_at,
-         b.owner_name, b.owner_country, b.source AS brand_source, b.evidence_url,
+         p.responsible_name, p.responsible_country, b.name AS b_name, b.owner_name, b.owner_country, b.source AS brand_source, b.evidence_url,
          s.name AS s_name, s.country AS s_country, s.source AS seller_source,
          (SELECT status FROM queue q WHERE q.kind='product' AND q.target=p.asin) AS q_status
   FROM products p
@@ -34,13 +34,15 @@ const lookupStmt = db.prepare(`
 function toResult(r) {
   if (!r.brand && !r.seller_name) return null; // only seen in a search listing so far
   const amazonBrand = isAmazonBrand(r.brand) || /^amazon/i.test(r.owner_name ?? '');
-  const ownerCountry = r.owner_country ?? r.manufacturer_country;
+  // Product-level GPSR country is only a stand-in until the brand has been resolved.
+  const ownerCountry = r.b_name ? r.owner_country : r.manufacturer_country;
   const amazonSeller = AMAZON_SELLER_IDS.has(r.seller_id) || isAmazonSellerName(r.seller_name);
   return {
     brand: {
       name: r.brand, owner: r.owner_name ?? r.manufacturer, country: ownerCountry,
       code: amazonBrand ? 'AMAZON' : flagCode(ownerCountry),
       source: r.brand_source ?? (r.manufacturer_country ? 'GPSR manufacturer on amazon.de' : null), evidence: r.evidence_url,
+      responsible: r.responsible_name ? { name: r.responsible_name, country: r.responsible_country } : null,
     },
     seller: {
       name: r.s_name ?? r.seller_name, id: r.seller_id, country: amazonSeller ? 'LU' : r.s_country,

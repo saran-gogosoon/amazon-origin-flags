@@ -30,16 +30,31 @@ export async function runSearch(term, pages = 2, origin = 'cli') {
 async function doProduct(asin) {
   const p = await fetchProduct(asin);
   if (p.notFound) { log('warn', 'product_not_found', { asin }); return; }
+  saveProduct(p);
+}
+
+/** Store a fetched product page and queue its seller / brand follow-ups. */
+export function saveProduct(p) {
+  const { asin } = p;
   const m = p.manufacturer;
+  // The EU responsible person shown for this product's seller (stored and shown, never used as owner country).
+  const sellerKey = (p.seller.name ?? '').toLowerCase();
+  const rsp = p.responsible.find((r) => r.seller?.toLowerCase() === sellerKey) ?? p.responsible[0] ?? null;
   db.prepare(`INSERT INTO products (asin, title, brand, seller_id, seller_name, manufacturer, manufacturer_address,
-      manufacturer_country, updated_at, source) VALUES (?,?,?,?,?,?,?,?,?,?)
+      manufacturer_country, manufacturer_note, responsible_name, responsible_address, responsible_country, gpsr_json,
+      updated_at, source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(asin) DO UPDATE SET title=excluded.title, brand=excluded.brand, seller_id=excluded.seller_id,
       seller_name=excluded.seller_name, manufacturer=excluded.manufacturer,
       manufacturer_address=excluded.manufacturer_address, manufacturer_country=excluded.manufacturer_country,
-      updated_at=excluded.updated_at, source=excluded.source`)
+      manufacturer_note=excluded.manufacturer_note, responsible_name=excluded.responsible_name,
+      responsible_address=excluded.responsible_address, responsible_country=excluded.responsible_country,
+      gpsr_json=excluded.gpsr_json, updated_at=excluded.updated_at, source=excluded.source`)
     .run(asin, p.title, p.brand, p.seller.id, p.seller.name, m?.name ?? null, m?.address ?? null, m?.country ?? null,
+      m?.note ?? null, rsp?.name ?? null, rsp?.address ?? null, rsp?.country ?? null,
+      m || p.responsible.length ? JSON.stringify({ manufacturer: m, responsible: p.responsible }) : null,
       now(), `amazon.de product page (${p.via})${m ? ' + GPSR manufacturer block' : ''}`);
-  log('info', 'product_saved', { asin, brand: p.brand, seller: p.seller.name, manufacturer: m?.name, mfr_country: m?.country });
+  log('info', 'product_saved', { asin, brand: p.brand, seller: p.seller.name, manufacturer: m?.name, mfr_country: m?.country,
+    ...(m?.note ? { mfr_note: m.note } : {}), eu_responsible: rsp?.name });
 
   if (p.seller.id && !AMAZON_SELLER_IDS.has(p.seller.id) && !isAmazonSellerName(p.seller.name)) {
     const known = db.prepare('SELECT country FROM sellers WHERE seller_id=?').get(p.seller.id);
@@ -61,13 +76,14 @@ async function doSeller(id) {
 }
 
 /**
- * Brand owner country, in order of preference:
+ * Brand owner country:
  *  1. Amazon's own brands → AMAZON
- *  2. GPSR manufacturer address from this brand's amazon.de product pages
- *  3. EU trade mark owner (TMview search → EUIPO record) — second source: fallback when there is no GPSR
- *     block, and a cross-check otherwise (agreement / disagreement is written into `source`)
+ *  2. GPSR manufacturer, country from the manufacturer's OWN address only (never the EU responsible person)
+ *  3. EU trade mark owner — only when the owner's name matches the GPSR manufacturer. Confirms 2, or supplies
+ *     the country when the manufacturer's address turned out to be the EU responsible person's.
+ *  Otherwise unknown (no guessing from namesake trade marks or EU importers).
  */
-async function doBrand(name) {
+export async function doBrand(name) {
   const save = (owner, country, source, url) => {
     db.prepare(`INSERT INTO brands (name, owner_name, owner_country, source, evidence_url, checked_at) VALUES (?,?,?,?,?,?)
       ON CONFLICT(name) DO UPDATE SET owner_name=excluded.owner_name, owner_country=excluded.owner_country,
@@ -77,9 +93,10 @@ async function doBrand(name) {
   };
   if (isAmazonBrand(name)) return save('Amazon', null, 'known Amazon private label', null);
 
-  const mfr = db.prepare(`SELECT manufacturer, manufacturer_country c, asin, count(*) n FROM products
-    WHERE brand = ? COLLATE NOCASE AND manufacturer_country IS NOT NULL GROUP BY manufacturer, manufacturer_country
-    ORDER BY n DESC LIMIT 1`).get(name);
+  // Most common GPSR manufacturer for this brand; prefer rows whose address is the manufacturer's own.
+  const mfr = db.prepare(`SELECT manufacturer, manufacturer_country c, manufacturer_note note, asin, count(*) n FROM products
+    WHERE brand = ? COLLATE NOCASE AND manufacturer IS NOT NULL GROUP BY manufacturer, manufacturer_country
+    ORDER BY (manufacturer_country IS NOT NULL) DESC, n DESC LIMIT 1`).get(name);
   if (mfr && /amazon/i.test(mfr.manufacturer)) return save('Amazon', mfr.c, 'GPSR manufacturer is Amazon', null);
 
   let tm = null;
@@ -89,15 +106,21 @@ async function doBrand(name) {
     if (!mfr) throw err; // no other evidence → let the queue retry later
     log('warn', 'trademark_lookup_failed', { brand: name, error: err.message });
   }
+  const tmText = tm?.matched && `EU trade mark "${tm.mark}"${tm.nice?.includes(8) ? ' (class 8)' : ''} owner ${tm.name} (${tm.country ?? '?'})`;
+  const dp = mfr && `https://www.amazon.de/dp/${mfr.asin}`;
 
-  const tmSource = tm && `EU trade mark "${tm.mark}" owner ${tm.name} (${tm.country ?? '?'}) via TMview/EUIPO`;
-  if (mfr) {
-    const check = !tm?.country ? '' : tm.country === mfr.c ? '; confirmed by EU trade mark owner'
-      : `; note: ${tmSource} differs`;
-    return save(mfr.manufacturer, mfr.c, `GPSR manufacturer on amazon.de${check}`, `https://www.amazon.de/dp/${mfr.asin}`);
+  if (mfr?.c) {
+    const check = tm?.matched ? (tm.country === mfr.c ? `; confirmed by ${tmText}` : `; note: ${tmText} differs`)
+      : tm ? `; EU trade mark: ${tm.reason}` : '';
+    return save(mfr.manufacturer, mfr.c, `GPSR manufacturer address on amazon.de${check}`, dp);
   }
-  if (tm?.country) return save(tm.name, tm.country, tmSource, tm.evidence_url);
-  save(null, null, 'no evidence yet', null);
+  if (mfr && tm?.matched && tm.country) {
+    return save(tm.name, tm.country, `${tmText} via EUIPO; GPSR manufacturer ${mfr.manufacturer}: ${mfr.note ?? 'no country'}`, tm.evidence_url);
+  }
+  if (mfr) {
+    return save(mfr.manufacturer, null, `GPSR manufacturer ${mfr.note ?? 'without country'}; EU trade mark: ${tm?.reason ?? 'lookup failed'}`, dp);
+  }
+  save(null, null, `no GPSR manufacturer; EU trade mark not used (${tm?.reason ?? 'lookup failed'})`, null);
 }
 
 const HANDLERS = { product: doProduct, seller: doSeller, brand: doBrand, search: (t) => runSearch(t, Number(process.env.SEARCH_PAGES ?? 2), 'queue') };

@@ -11,6 +11,7 @@
     "collect": "node src/collector/cli.js",
     "collector": "node src/collector/cli.js --loop",
     "blocking-demo": "node src/collector/blocking-demo.js",
+    "rederive": "node src/collector/rederive.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

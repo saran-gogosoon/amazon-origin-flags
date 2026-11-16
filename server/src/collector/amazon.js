@@ -2,6 +2,7 @@
 import * as cheerio from 'cheerio';
 import { getPage } from './http.js';
 import { toIso } from '../countries.js';
+import { namesSimilar, isCompanyName } from '../names.js';
 
 const BASE = 'https://www.amazon.de';
 const clean = (s) => (s ?? '').replace(/[‎‏]/g, '').replace(/\s+/g, ' ').trim();
@@ -75,30 +76,83 @@ export function parseProduct(html) {
   };
 }
 
-/** Parse the GPSR "Herstellerinformationen" HTML fragment → { name, address, country }. */
-export function parseManufacturer(html) {
-  const $ = cheerio.load(html);
-  const box = $('#buffet-sidesheet-manufacturer-content-container .a-box').first();
-  if (!box.length) return null;
-  const name = clean(box.find('.a-text-bold').first().text());
-  const lines = box.find('li > span.a-list-item').map((_, el) => clean($(el).text())).get().filter(Boolean);
-  const addressLines = lines.filter((l) => !/@|^\+?\d[\d\s/-]{6,}$|^https?:/i.test(l));
-  let country = null;
-  for (const line of addressLines) {
+// ---- GPSR block ("Herstellerinformationen" + "Verantwortliche Person") --------------------------
+// Both containers list entries as <span class="a-text-bold">Label</span><ul><li>line</li>…</ul>.
+// Manufacturer entry: label = manufacturer name, lines = its address.
+// Responsible-person entries: label = the seller they belong to, first line = person/company, then address.
+const CONTACT = /@|^\+?\d[\d\s/()-]{6,}$|^https?:|^www\./i;
+
+function gpsrEntries($, containerId) {
+  const out = [];
+  $(`#${containerId} .a-box span.a-text-bold`).each((_, el) => {
+    const ul = $(el).nextAll('ul').first();
+    const lines = ul.find('li').filter((_, li) => !$(li).find('li').length)
+      .map((_, li) => clean($(li).text()).replace(/(,\s*)+$/, '')).get().filter((l) => l && !CONTACT.test(l) && l !== 'NULL');
+    out.push({ label: clean($(el).text()), lines });
+  });
+  return out;
+}
+
+/** Country from address lines like "Flintbek, DE, 24220" (last recognisable country token wins). */
+export function addressCountry(lines) {
+  for (const line of [...lines].reverse()) {
     for (const part of line.split(',').map((p) => p.trim()).reverse()) {
       const iso = toIso(part);
-      if (iso) { country = iso; break; }
+      if (iso) return iso;
     }
-    if (country) break;
   }
-  return name ? { name, address: addressLines.join(', '), country } : null;
+  return null;
 }
+
+// Street + postcode fingerprint, tolerant to "Str." / "Straße" / "Strasse" spelling.
+const addressKey = (lines) => {
+  const text = lines.join(' ').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/stra(ss|ß)e|str\./g, 'str').replace(/[^a-z0-9 ]/g, ' ');
+  const postcode = text.match(/\b\d{4,6}\b/)?.[0] ?? '';
+  const street = (lines[0] ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/stra(ss|ß)e|str\./g, 'str').replace(/[^a-z0-9]/g, '');
+  return postcode && street ? `${postcode}|${street}` : null;
+};
+
+/**
+ * Parse the GPSR fragment → { manufacturer, responsible: [...] }.
+ * The owner country is taken ONLY from the manufacturer's own address. If that address is identical to the
+ * address of an EU responsible person from another company (Amazon sometimes shows the EU importer's address
+ * under the manufacturer's name), it is not the manufacturer's own and its country is not trusted.
+ */
+export function parseGpsr(html) {
+  const $ = cheerio.load(html);
+  const responsible = gpsrEntries($, 'buffet-sidesheet-rsp-content-container').map(({ label, lines }) => ({
+    seller: label, name: lines[0] ?? null, address: lines.slice(1).join(', ') || null, country: addressCountry(lines.slice(1)),
+    key: addressKey(lines.slice(1)),
+  }));
+  const [m] = gpsrEntries($, 'buffet-sidesheet-manufacturer-content-container');
+  let manufacturer = null;
+  if (m?.label) {
+    const key = addressKey(m.lines);
+    // Same address as a responsible person that is a *different company* (e.g. "FELCO SA" shown with
+    // "FELCO Europe GmbH"'s address) → the importer's address. A company that is its own EU responsible person,
+    // or a named contact person at the manufacturer's address, is fine.
+    const sameAsRsp = key ? responsible.find((r) => r.key === key && isCompanyName(r.name) && !namesSimilar(r.name, m.label)) : null;
+    const addressCountryIso = addressCountry(m.lines);
+    manufacturer = {
+      name: m.label, address: m.lines.join(', ') || null, addressCountry: addressCountryIso,
+      country: sameAsRsp ? null : addressCountryIso,
+      note: sameAsRsp ? `address is the EU responsible person's (${sameAsRsp.name}), not the manufacturer's own` : null,
+    };
+  }
+  return { manufacturer, responsible: responsible.map(({ key, ...r }) => r) };
+}
+
+/** Backwards-compatible helper: just the manufacturer part. */
+export const parseManufacturer = (html) => parseGpsr(html).manufacturer;
 
 export async function fetchProduct(asin) {
   const url = `${BASE}/dp/${asin}`;
   const res = await getPage(url, { expect: /id="productTitle"|id="dp-container"|id="dp"/ });
   const product = { asin, url, via: res.via, notFound: res.status === 404, ...parseProduct(res.body) };
   product.manufacturer = null;
+  product.responsible = [];
   if (product.acp?.path && product.acp?.params) {
     const r = await getPage(`${BASE}${product.acp.path}getRspManufacturerContent?page-type=Detail`, {
       method: 'POST',
@@ -107,7 +161,7 @@ export async function fetchProduct(asin) {
         'x-requested-with': 'XMLHttpRequest', referer: url },
       expect: /buffet-sidesheet|Herstellerinformationen|a-box/,
     });
-    product.manufacturer = parseManufacturer(r.body);
+    Object.assign(product, parseGpsr(r.body));
   }
   return product;
 }

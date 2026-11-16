@@ -49,6 +49,10 @@
       const b = r.brand, s = r.seller;
       line('Brand:', `${b.name ?? '?'} → ${OriginFlags.LABELS[b.code]}${b.country ? ` (${b.country})` : ''}`,
         [b.owner && `Owner: ${b.owner}`, b.source && `Source: ${b.source}`].filter(Boolean).join(' · '));
+      if (b.responsible) {
+        line('EU responsible person:', `${b.responsible.name}${b.responsible.country ? ` (${b.responsible.country})` : ''}`,
+          'Importer / EU representative – not used for the flag');
+      }
       line('Seller:', `${s.name ?? '?'} → ${OriginFlags.LABELS[s.code]}${s.country ? ` (${s.country})` : ''}`,
         s.source ? `Source: ${s.source}` : '');
     }

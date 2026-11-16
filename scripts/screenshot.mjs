@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const EXT = join(ROOT, 'extension');
-const DOCS = join(ROOT, 'docs');
+const DOCS = process.env.DOCS_DIR ? resolve(process.env.DOCS_DIR) : join(ROOT, 'docs');
 const API_BASE = (process.env.API_BASE ?? 'http://localhost:5180').replace(/\/+$/, '');
 const QUERY = process.env.QUERY ?? 'Gartenschere';
 mkdirSync(DOCS, { recursive: true });
@@ -91,6 +91,8 @@ const stats = await page.evaluate(() => {
     brandKnown: boxes.filter((b) => b.dataset.brand !== 'UNKNOWN').length,
     sellerKnown: boxes.filter((b) => b.dataset.seller !== 'UNKNOWN').length,
     bothKnown: boxes.filter((b) => b.dataset.brand !== 'UNKNOWN' && b.dataset.seller !== 'UNKNOWN').length,
+    unknownBrand: boxes.filter((b) => b.dataset.brand === 'UNKNOWN').map((b) => b.dataset.stamp.split('|')[0]),
+    unknownSeller: boxes.filter((b) => b.dataset.seller === 'UNKNOWN').map((b) => b.dataset.stamp.split('|')[0]),
     brandCodes: count('brand'),
     sellerCodes: count('seller'),
   };
@@ -99,6 +101,8 @@ const pct = (n) => `${stats.tiles ? Math.round((100 * n) / stats.tiles) : 0}%`;
 console.log(`tiles: ${stats.tiles}, with badges: ${stats.tilesWithBadges}`);
 console.log(`brand flag known: ${stats.brandKnown} (${pct(stats.brandKnown)}), seller flag known: ${stats.sellerKnown} (${pct(stats.sellerKnown)}), both: ${stats.bothKnown} (${pct(stats.bothKnown)})`);
 console.log('brand codes', JSON.stringify(stats.brandCodes), 'seller codes', JSON.stringify(stats.sellerCodes));
+console.log('unknown brand tiles', stats.unknownBrand.join(','));
+console.log('unknown seller tiles', stats.unknownSeller.join(','));
 
 // Scroll so the first row of results is in view and take the full viewport.
 const first = page.locator('[data-component-type="s-search-result"] of-badges').first();

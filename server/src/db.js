@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS collector_log (
 );
 `);
 
+// Columns added after the first release (SQLite has no ADD COLUMN IF NOT EXISTS).
+const addColumns = (table, cols) => {
+  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  for (const [name, type] of cols) if (!have.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+};
+addColumns('products', [['manufacturer_note', 'TEXT'], ['responsible_name', 'TEXT'], ['responsible_address', 'TEXT'],
+  ['responsible_country', 'TEXT'], ['gpsr_json', 'TEXT']]);
+
 // A crash mid-job leaves rows in 'running'; put them back so nothing is lost.
 db.prepare(`UPDATE queue SET status='pending' WHERE status='running'`).run();
 
