@@ -12,6 +12,7 @@ test('block detection', () => {
   assert.equal(detectBlock(200, 'https://www.amazon.de/dp/X', '<p>Geben Sie die unten angezeigten Zeichen ein</p>', /productTitle/), 'captcha');
   assert.equal(detectBlock(200, 'https://www.amazon.de/dp/X', '<html></html>', /productTitle/), 'empty_page');
   assert.equal(detectBlock(200, 'https://www.tmdn.org/x', '<title>Request Rejected</title>', /tradeMarks/), 'robot_page');
+  assert.equal(detectBlock(200, 'https://www.tmdn.org/error/revise.html', '<html>…</html>', /tradeMarks/), 'ip_block');
   assert.equal(detectBlock(200, 'https://www.amazon.de/dp/X', '<span id="productTitle">ok</span>', /productTitle/), null);
 });
 

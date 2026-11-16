@@ -96,6 +96,7 @@ export function detectBlock(status, finalUrl, body, expect) {
   if (status === 429) return 'http_429';
   if (status === 403) return 'http_403';
   if (CAPTCHA_PATTERNS.slice(0, 3).some((re) => re.test(finalUrl) || re.test(body))) return 'captcha';
+  if (/\/error\/revise|\/errors?\/(blocked|denied)/i.test(finalUrl)) return 'ip_block'; // e.g. tmdn.org WAF redirect
   if (status >= 200 && status < 300 && expect && !expect.test(body)) {
     if (CAPTCHA_PATTERNS[3].test(body) && body.length < 20_000) return 'captcha';
     if (ROBOT_PATTERNS.some((re) => re.test(body))) return 'robot_page';
