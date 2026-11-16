@@ -6,8 +6,13 @@ import { toIso } from '../countries.js';
 const BASE = 'https://www.amazon.de';
 const clean = (s) => (s ?? '').replace(/[‎‏]/g, '').replace(/\s+/g, ' ').trim();
 
-// Amazon sometimes renders a name twice inside one link ("Yzona StoreYzona Store").
-const undouble = (s) => (s.length % 2 === 0 && s.slice(0, s.length / 2) === s.slice(s.length / 2) ? s.slice(0, s.length / 2) : s);
+// Amazon sometimes renders a name several times inside one link ("Yzona StoreYzona Store").
+const undouble = (s) => {
+  for (let len = 1; len <= s.length / 2; len++) {
+    if (s.length % len === 0 && s.slice(0, len).repeat(s.length / len) === s) return s.slice(0, len);
+  }
+  return s;
+};
 
 // ---- search ---------------------------------------------------------------------------------
 export function parseSearch(html) {

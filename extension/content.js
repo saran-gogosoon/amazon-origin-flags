@@ -2,7 +2,7 @@
 // seller come from, and overlays two round flag badges (left = brand owner, right = seller).
 (() => {
   const DEFAULTS = { enabled: true, size: 'M', apiBase: 'https://code-demos.gogosoon.com/origin-flags' };
-  const SIZES = { S: 16, M: 22, L: 30 };
+  const SIZES = { S: 20, M: 26, L: 34 };
   const RETRY_MS = 60_000;
   const MAX_RETRIES = 15;
 

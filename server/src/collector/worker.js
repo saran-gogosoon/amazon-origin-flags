@@ -7,6 +7,8 @@ import { lookupBrandOwner } from './trademarks.js';
 import { BlockedError, HostPausedError } from './http.js';
 import { AMAZON_SELLER_IDS, isAmazonBrand, isAmazonSellerName } from '../countries.js';
 
+// Priorities: seller (12) and brand (11) follow-ups run before new products (<= 10), so every product
+// that was crawled gets both flags quickly instead of waiting for the whole product backlog.
 const MAX_ATTEMPTS = Number(process.env.MAX_ATTEMPTS ?? 8);
 const DAY = 86_400_000;
 
@@ -41,11 +43,11 @@ async function doProduct(asin) {
 
   if (p.seller.id && !AMAZON_SELLER_IDS.has(p.seller.id) && !isAmazonSellerName(p.seller.name)) {
     const known = db.prepare('SELECT country FROM sellers WHERE seller_id=?').get(p.seller.id);
-    if (!known?.country) enqueue('seller', p.seller.id, { priority: 5, rearm: true });
+    if (!known?.country) enqueue('seller', p.seller.id, { priority: 12, rearm: true });
   }
   if (p.brand) {
     const known = db.prepare('SELECT owner_country FROM brands WHERE name=?').get(p.brand);
-    if (!known?.owner_country) enqueue('brand', p.brand, { priority: 4, rearm: true });
+    if (!known?.owner_country) enqueue('brand', p.brand, { priority: 11, rearm: true });
   }
 }
 
@@ -61,10 +63,9 @@ async function doSeller(id) {
 /**
  * Brand owner country, in order of preference:
  *  1. Amazon's own brands → AMAZON
- *  2. EU trade mark owner (TMview + EUIPO) when exactly one company holds live EU marks for this name
- *     — the legal brand owner; also catches GPSR blocks that list an EU agent as "manufacturer"
- *  3. GPSR manufacturer from this brand's amazon.de product pages
- *  4. EU trade mark owner when the name is shared by several applicants (best match)
+ *  2. GPSR manufacturer address from this brand's amazon.de product pages
+ *  3. EU trade mark owner (TMview search → EUIPO record) — second source: fallback when there is no GPSR
+ *     block, and a cross-check otherwise (agreement / disagreement is written into `source`)
  */
 async function doBrand(name) {
   const save = (owner, country, source, url) => {
@@ -89,15 +90,11 @@ async function doBrand(name) {
     log('warn', 'trademark_lookup_failed', { brand: name, error: err.message });
   }
 
-  const tmSource = tm && `EU trade mark "${tm.mark}" (${tm.status}) via TMview/EUIPO`;
-  if (tm?.country && tm.live && tm.unique) {
-    const agrees = mfr && mfr.c === tm.country;
-    return save(tm.name, tm.country, tmSource + (agrees ? ' + GPSR manufacturer agrees' : ''), tm.evidence_url);
-  }
+  const tmSource = tm && `EU trade mark "${tm.mark}" owner ${tm.name} (${tm.country ?? '?'}) via TMview/EUIPO`;
   if (mfr) {
-    const agrees = tm?.country && tm.country === mfr.c;
-    return save(mfr.manufacturer, mfr.c, `GPSR manufacturer on amazon.de${agrees ? ' (confirmed by EU trade mark)' : ''}`,
-      `https://www.amazon.de/dp/${mfr.asin}`);
+    const check = !tm?.country ? '' : tm.country === mfr.c ? '; confirmed by EU trade mark owner'
+      : `; note: ${tmSource} differs`;
+    return save(mfr.manufacturer, mfr.c, `GPSR manufacturer on amazon.de${check}`, `https://www.amazon.de/dp/${mfr.asin}`);
   }
   if (tm?.country) return save(tm.name, tm.country, tmSource, tm.evidence_url);
   save(null, null, 'no evidence yet', null);
