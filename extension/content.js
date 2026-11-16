@@ -36,12 +36,11 @@
   }
 
   function tooltip(asin, r) {
-    const tip = document.createElement('div');
-    tip.className = 'of-tip';
+    const tip = document.createElement('of-tip');
     const line = (label, text, sub) => {
-      const row = document.createElement('div');
-      const b = document.createElement('b'); b.textContent = label; row.append(b, ' ', text);
-      if (sub) { const s = document.createElement('span'); s.textContent = sub; row.append(s); }
+      const row = document.createElement('of-row');
+      const b = document.createElement('of-b'); b.textContent = label; row.append(b, ' ', text);
+      if (sub) { const s = document.createElement('of-sub'); s.textContent = sub; row.append(s); }
       tip.append(row);
     };
     if (!r) {
@@ -53,7 +52,7 @@
       line('Seller:', `${s.name ?? '?'} → ${OriginFlags.LABELS[s.code]}${s.country ? ` (${s.country})` : ''}`,
         s.source ? `Source: ${s.source}` : '');
     }
-    const foot = document.createElement('div'); foot.className = 'of-foot'; foot.textContent = `Origin Flags · ${asin}`;
+    const foot = document.createElement('of-sub'); foot.className = 'of-foot'; foot.textContent = `Origin Flags · ${asin}`;
     tip.append(foot);
     return tip;
   }
@@ -63,18 +62,19 @@
     const brand = r?.brand.code ?? 'UNKNOWN';
     const seller = r?.seller.code ?? 'UNKNOWN';
     const stamp = `${asin}|${brand}|${seller}|${settings.size}`;
-    let box = host.querySelector(':scope > .of-badges');
+    let box = host.querySelector(':scope > of-badges');
     if (box?.dataset.stamp === stamp) return;
     box?.remove();
     if (getComputedStyle(host).position === 'static') host.classList.add('of-host');
-    box = document.createElement('div');
+    // Custom element names, so amazon.de's own `div` / `span` rules never style the overlay.
+    box = document.createElement('of-badges');
     box.className = `of-badges of-${settings.size}`;
     box.dataset.stamp = stamp;
     box.dataset.brand = brand;
     box.dataset.seller = seller;
     const px = SIZES[settings.size] ?? SIZES.M;
     for (const [side, code] of [['left', brand], ['right', seller]]) {
-      const span = document.createElement('span');
+      const span = document.createElement('of-badge');
       span.className = `of-badge of-${side}`;
       span.innerHTML = OriginFlags.svg(code, px); // static SVG built from our own constants
       box.append(span);
@@ -84,7 +84,7 @@
   }
 
   function removeAll() {
-    document.querySelectorAll('.of-badges').forEach((n) => n.remove());
+    document.querySelectorAll('of-badges').forEach((n) => n.remove());
   }
 
   async function scan() {
@@ -123,7 +123,7 @@
     scan();
     // Infinite scroll / SPA-style updates: re-scan when the DOM changes (debounced).
     new MutationObserver((muts) => {
-      if (muts.some((m) => [...m.addedNodes].some((n) => n.nodeType === 1 && !n.closest?.('.of-badges')))) queueScan();
+      if (muts.some((m) => [...m.addedNodes].some((n) => n.nodeType === 1 && !n.closest?.('of-badges')))) queueScan();
     }).observe(document.body, { childList: true, subtree: true });
   });
   chrome.storage.onChanged.addListener((changes) => {

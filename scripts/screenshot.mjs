@@ -41,13 +41,13 @@ for (const sel of ['#sp-cc-accept', 'input[name="accept"]', 'button:has-text("Ak
 // "Deliver to another country?" popover (shown to non-German IPs) covers the first row.
 const dismiss = page.locator('input[data-action-type="DISMISS"], .glow-toaster-button-dismiss input').first();
 if (await dismiss.isVisible().catch(() => false)) await dismiss.click().catch(() => {});
-await page.waitForSelector('.of-badge', { timeout: 30_000 });
+await page.waitForSelector('of-badge', { timeout: 30_000 });
 await page.waitForTimeout(3_000); // let lazy tiles get their badges
 
 const stats = await page.evaluate(() => {
   const tiles = [...document.querySelectorAll('[data-component-type="s-search-result"][data-asin]')]
     .filter((t) => /^[A-Z0-9]{10}$/.test(t.dataset.asin));
-  const boxes = tiles.map((t) => t.querySelector('.of-badges')).filter(Boolean);
+  const boxes = tiles.map((t) => t.querySelector('of-badges')).filter(Boolean);
   const count = (side) => boxes.reduce((m, b) => ({ ...m, [b.dataset[side]]: (m[b.dataset[side]] ?? 0) + 1 }), {});
   return {
     tiles: tiles.length,
@@ -65,19 +65,19 @@ console.log(`brand flag known: ${stats.brandKnown} (${pct(stats.brandKnown)}), s
 console.log('brand codes', JSON.stringify(stats.brandCodes), 'seller codes', JSON.stringify(stats.sellerCodes));
 
 // Scroll so the first row of results is in view and take the full viewport.
-const first = page.locator('[data-component-type="s-search-result"] .of-badges').first();
+const first = page.locator('[data-component-type="s-search-result"] of-badges').first();
 await first.evaluate((el) => el.closest('[data-component-type="s-search-result"]').scrollIntoView({ block: 'start' }));
 await page.evaluate(() => window.scrollBy(0, -120));
 await page.waitForTimeout(800);
 await page.screenshot({ path: join(DOCS, 'screenshot-search.png') });
 
 // Close-up: hover a fully known tile so the tooltip is visible.
-const known = page.locator('[data-component-type="s-search-result"] .of-badges:not([data-brand="UNKNOWN"]):not([data-seller="UNKNOWN"])').first();
+const known = page.locator('[data-component-type="s-search-result"] of-badges:not([data-brand="UNKNOWN"]):not([data-seller="UNKNOWN"])').first();
 const target = (await known.count()) ? known : first;
 const tile = target.locator('xpath=ancestor::*[@data-component-type="s-search-result"][1]');
 await tile.scrollIntoViewIfNeeded();
 await page.waitForTimeout(300);
-await target.locator('.of-badge.of-left').hover();
+await target.locator('of-badge.of-left').hover();
 await page.waitForTimeout(400);
 const box = await tile.boundingBox();
 await page.screenshot({ path: join(DOCS, 'screenshot-closeup.png'),
