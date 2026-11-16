@@ -4,6 +4,8 @@ A Chrome extension shows **where the brand owner and the seller of every amazon.
 It puts two small round flags on each product picture. The answers come from **our own server**. A **collector** keeps
 filling the server's database from amazon.de and the EU trade mark register. It notices when it is being blocked and works around it.
 
+**Live demo:** server status page and collector log at <https://code-demos.gogosoon.com/origin-flags/>. The extension talks to this server by default: load `extension/` unpacked and search amazon.de for "Gartenschere".
+
 ![Search results for "Gartenschere" with origin flags](docs/screenshot-search.png)
 
 | Close-up with tooltip | Popup |
