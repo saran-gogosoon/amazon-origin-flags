@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span class="logo" id="logo"></span>
+    <div><h1>Origin Flags</h1><small>amazon.de · brand owner &amp; seller origin</small></div>
+    <label class="switch" title="On / off"><input type="checkbox" id="enabled"><span></span></label>
+  </header>
+
+  <section>
+    <h2>Badge size</h2>
+    <div class="seg" id="size">
+      <button data-v="S">S</button><button data-v="M">M</button><button data-v="L">L</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Legend</h2>
+    <p class="hint"><b>Left</b> badge = brand owner · <b>Right</b> badge = seller</p>
+    <ul class="legend" id="legend"></ul>
+  </section>
+
+  <section>
+    <h2>Server</h2>
+    <div class="row">
+      <input id="apiBase" type="url" spellcheck="false">
+      <button id="save">Save</button>
+    </div>
+    <p class="stats" id="stats">…</p>
+  </section>
+  <script src="flags.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Origin Flags for amazon.de",
+  "version": "0.1.0",
+  "description": "Shows where the brand owner and the seller of each amazon.de product come from.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://code-demos.gogosoon.com/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://www.amazon.de/*"],
+    "js": ["flags.js", "content.js"],
+    "css": ["content.css"],
+    "run_at": "document_idle"
+  }],
+  "action": { "default_popup": "popup.html", "default_title": "Origin Flags", "default_icon": { "32": "icons/icon32.png", "128": "icons/icon128.png" } },
+  "icons": { "32": "icons/icon32.png", "128": "icons/icon128.png" }
+}
