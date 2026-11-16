@@ -46,7 +46,7 @@ flowchart LR
     W[collector worker] --- DB
   end
   W -->|search, product page,<br/>GPSR block, seller profile| AMZ[amazon.de]
-  W -->|trade mark owner| TM[TMview + EUIPO]
+  W -->|trade mark owner| TM[EUIPO eSearch / TMview]
 ```
 
 * `extension/`: Chrome MV3 extension. The content script finds search tiles (`[data-component-type="s-search-result"][data-asin]`)
@@ -81,18 +81,18 @@ All URLs on the status page are relative, so it works behind Caddy at `/origin-f
 |---|---|---|
 | ASINs for a search | amazon.de search page `/s?k=…` (all result pages requested) | `products.source` |
 | Brand, seller name + seller id | amazon.de product page: product overview / `Marke`, `#bylineInfo`; `#sellerProfileTriggerId` or the "Versender / Verkäufer" box | `products.source` |
-| Manufacturer name + address | **EU GPSR "Herstellerinformationen" block** on the product page. It is lazy-loaded, so the collector calls the same `getRspManufacturerContent` endpoint the page uses, with the page's own `x-amz-acp-params` token | `products.manufacturer*` |
+| Manufacturer + EU responsible person | **EU GPSR block** on the product page ("Herstellerinformationen" and "Verantwortliche Person"). It is lazy-loaded, so the collector calls the same `getRspManufacturerContent` endpoint the page uses, with the page's own `x-amz-acp-params` token. The two parts are parsed separately: the responsible person / importer is stored and shown in the tooltip, but **never** used as the owner country | `products.manufacturer*`, `products.responsible_*`, `products.gpsr_json` |
 | Seller country | amazon.de seller profile `/sp?seller=ID`, "Geschäftsadresse" (last line = country) | `sellers.source` |
-| Brand owner country | 1. Amazon private label → AMAZON<br>2. **GPSR manufacturer** address country (from this brand's product pages)<br>3. **EU trade mark owner** as second source (TMview search API → EUIPO eSearch record → applicant nationality): fallback when there is no GPSR block, cross-check otherwise | `brands.source` + `brands.evidence_url` |
+| Brand owner country | 1. Amazon private label → AMAZON<br>2. **GPSR manufacturer**, country from the manufacturer's **own** address only. If Amazon shows the address of a *different* company's EU responsible person under the manufacturer's name (e.g. "FELCO SA" with FELCO Europe GmbH's German address), that address is ignored<br>3. **EU trade mark owner** (EUIPO eSearch, TMview as fallback), **only if the owner's name matches the GPSR manufacturer** (token overlap, legal forms like GmbH/SA/Ltd/Co ignored); marks in Nice class 8 (hand tools) preferred. Confirms 2, or supplies the country when 2 has none<br>4. Otherwise unknown (empty badge). No guessing from namesake trade marks or importers | `brands.source` + `brands.evidence_url` |
 
-The cross-check is written into the source and the tooltip, e.g. `GPSR manufacturer on amazon.de; confirmed by EU trade mark owner`.
-When the two disagree the GPSR value is kept and the disagreement is recorded. Chinese brands sometimes list an EU agent (e.g. "SUCCESS COURIER SL", Spain) as the GPSR "manufacturer", while the EU trade mark belongs to a company in Shenzhen. These cases are listed in `REPORT.md` and are a candidate rule for the next step.
+The decision and its evidence are written into the source and the tooltip, e.g. `GPSR manufacturer address on amazon.de; confirmed by EU trade mark "ORIGINAL LOWE" (class 8) owner Gebr. Schröder GmbH (DE)` or `EU trade mark: no matching EU mark (owners: …)`.
+`npm run rederive` re-applies these rules to an existing database. It only re-fetches GPSR blocks where the result can change, politely through the same block-aware client.
 
 Trade mark register, as tested in November 2026 (no API key needed):
-* TMview `POST https://www.tmdn.org/tmview/api/search/results` works. It needs a browser-like request: header names in browser case and a `Referer`.
-  Its detail endpoint is behind a WAF (403), and headless browsers get "Request Rejected".
-* EUIPO eSearch `GET https://euipo.europa.eu/copla/trademark/data/{number}` returns applicant name, address and nationality as JSON.
-* So the lookup is: TMview finds the EU marks with the exact brand name, then EUIPO gives each owner's country.
+* EUIPO eSearch `POST https://euipo.europa.eu/copla/ctmsearch/json` (form-encoded, as the eSearch page sends it) returns marks with applicant name, applicant country and Nice classes in one call. This is the primary route.
+* TMview `POST https://www.tmdn.org/tmview/api/search/results` works with a browser-like request (header names in browser case, a `Referer`), but its WAF blocked this machine's IP after ~40 searches (redirect to `/error/revise.html`). It is the fallback.
+* EUIPO `GET https://euipo.europa.eu/copla/trademark/data/{number}` gives a single mark's applicant address when the search result has no country.
+* Same-name marks by unrelated companies are common ("FELCO" is also registered by a Malaysian medical supplier and a Chinese lighting maker), hence the name-match rule.
 
 ### Blocking: detection and response
 
@@ -185,8 +185,8 @@ The prototype was built in one session with Claude Code, working as an autonomou
    `getRspManufacturerContent` call and the `x-amz-acp-params` token it needs. It then reproduced that call over plain HTTP.
 2. **Trade mark register.** It tried TMview and EUIPO endpoints one by one and found that TMview's WAF rejects lowercase HTTP header names. It then chose
    TMview search + EUIPO record as the no-key route.
-3. **Data quality check.** In the first real results the agent noticed EU agents ("… SL", Spain) listed as manufacturers of Chinese
-   brands. It added the EU trade mark owner as a cross-check, so these disagreements are visible in the data.
+3. **Data quality check.** In the first real results the agent noticed EU importers and agents listed in the GPSR block, and namesake trade marks.
+   The parser now separates the manufacturer from the EU responsible person, and trade mark owners must match the manufacturer's name.
 4. **Verified end to end:** real seed run → API → extension loaded in Chromium on the real amazon.de → screenshots, with badge counts
    printed by the script.
 
